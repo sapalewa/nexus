@@ -1,0 +1,6 @@
+{
+  "name": "NexusAI - WhatsApp & ElevenLabs CRM Suite",
+  "description": "Enterprise AI Agent CRM platform integrated with WhatsApp Business API and ElevenLabs Conversational AI, featuring real-time order processing, admin notifications, and Supabase architecture.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
