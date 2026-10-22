@@ -19,6 +19,13 @@ import {
   BookOpen
 } from 'lucide-react';
 import { SystemConfig } from '../types/crm';
+import { 
+  verifySupabaseConnection, 
+  verifyMetaWhatsAppConnection, 
+  verifyWebhookHandshake, 
+  verifyElevenLabsConnection,
+  HealthCheckResult 
+} from '../services/healthVerifier';
 
 export type RealServiceStatus = 'untested' | 'testing' | 'connected' | 'disconnected';
 
@@ -94,136 +101,46 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
     `[${new Date().toLocaleTimeString('id-ID')}] Infrastructure Monitor siap. Status awal: Menunggu inisiasi pengujian live.`
   ]);
 
-  // Test satu layanan secara nyata via backend endpoint
+  // Test satu layanan secara nyata via healthVerifier (dual-mode & safe JSON)
   const testSingleService = async (serviceId: string) => {
     setServices(prev =>
-      prev.map(s => (s.id === serviceId ? { ...s, status: 'testing', message: 'Sedang menghubungi endpoint...' } : s))
+      prev.map(s => (s.id === serviceId ? { ...s, status: 'testing', message: 'Sedang menguji konektivitas...' } : s))
     );
 
     const now = new Date().toLocaleTimeString('id-ID');
+    let result: HealthCheckResult;
 
-    try {
-      if (serviceId === 'supabase') {
-        const res = await fetch('/api/test/supabase', { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify({
-            url: config.supabase_url,
-            key: config.supabase_service_role_key || config.supabase_anon_key
-          }) 
-        });
-        const data = await res.json();
-        
-        setServices(prev =>
-          prev.map(s =>
-            s.id === 'supabase'
-              ? {
-                  ...s,
-                  status: data.status === 'connected' ? 'connected' : 'disconnected',
-                  latencyMs: data.latencyMs || 0,
-                  httpStatus: res.status,
-                  lastCheckedTime: now,
-                  message: data.details || data.error,
-                  errorDetail: data.error
-                }
-              : s
-          )
-        );
-        setAuditLogs(old => [...old, `[${now}] [SUPABASE] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.error || data.details}`]);
-      } else if (serviceId === 'meta_whatsapp') {
-        const res = await fetch('/api/test/meta-whatsapp', { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify({
-            phone_number_id: config.whatsapp_phone_number_id,
-            access_token: config.whatsapp_access_token
-          }) 
-        });
-        const data = await res.json();
-
-        setServices(prev =>
-          prev.map(s =>
-            s.id === 'meta_whatsapp'
-              ? {
-                  ...s,
-                  status: data.status === 'connected' ? 'connected' : 'disconnected',
-                  latencyMs: data.latencyMs || 0,
-                  httpStatus: res.status,
-                  lastCheckedTime: now,
-                  message: data.details || data.error,
-                  errorDetail: data.error
-                }
-              : s
-          )
-        );
-        setAuditLogs(old => [...old, `[${now}] [META] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.error || data.details}`]);
-      } else if (serviceId === 'whatsapp_webhook') {
-        const challenge = `test_challenge_${Date.now()}`;
-        const res = await fetch(`/api/webhook/whatsapp?hub.mode=subscribe&hub.challenge=${challenge}&hub.verify_token=${config.whatsapp_verify_token}`);
-        const text = await res.text();
-        const isOk = res.ok && text === challenge;
-
-        setServices(prev =>
-          prev.map(s =>
-            s.id === 'whatsapp_webhook'
-              ? {
-                  ...s,
-                  status: isOk ? 'connected' : 'disconnected',
-                  latencyMs: 15,
-                  httpStatus: res.status,
-                  lastCheckedTime: now,
-                  message: isOk ? 'Handshake GET berhasil. Server mengembalikan hub.challenge sesuai permintaan Meta.' : 'Handshake gagal. Token verifikasi tidak cocok.',
-                  errorDetail: isOk ? undefined : `Respon: ${text}`
-                }
-              : s
-          )
-        );
-        setAuditLogs(old => [...old, `[${now}] [WEBHOOK] HTTP ${res.status}: ${isOk ? 'TERKONEKSI' : 'GAGAL'}`]);
-      } else if (serviceId === 'elevenlabs') {
-        const res = await fetch('/api/test/elevenlabs', { 
-          method: 'POST', 
-          headers: { 'Content-Type': 'application/json' }, 
-          body: JSON.stringify({
-            api_key: config.elevenlabs_api_key,
-            agent_id: config.elevenlabs_agent_id
-          }) 
-        });
-        const data = await res.json();
-
-        setServices(prev =>
-          prev.map(s =>
-            s.id === 'elevenlabs'
-              ? {
-                  ...s,
-                  status: data.status === 'connected' ? 'connected' : 'disconnected',
-                  latencyMs: data.latencyMs || 0,
-                  httpStatus: res.status,
-                  lastCheckedTime: now,
-                  message: data.details || data.error,
-                  errorDetail: data.details && data.error ? `${data.error} (${data.details})` : (data.error || data.details),
-                  solutions: data.solution
-                }
-              : s
-          )
-        );
-        setAuditLogs(old => [...old, `[${now}] [ELEVENLABS] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.details || data.error}`]);
-      }
-    } catch (err: any) {
-      setServices(prev =>
-        prev.map(s =>
-          s.id === serviceId
-            ? {
-                ...s,
-                status: 'disconnected',
-                lastCheckedTime: now,
-                message: 'Gagal melakukan request ke backend.',
-                errorDetail: err.message
-              }
-            : s
-        )
-      );
-      setAuditLogs(old => [...old, `[${now}] [ERROR] Service ${serviceId}: ${err.message}`]);
+    if (serviceId === 'supabase') {
+      result = await verifySupabaseConnection(config);
+    } else if (serviceId === 'meta_whatsapp') {
+      result = await verifyMetaWhatsAppConnection(config);
+    } else if (serviceId === 'whatsapp_webhook') {
+      result = await verifyWebhookHandshake(config);
+    } else {
+      result = await verifyElevenLabsConnection(config);
     }
+
+    setServices(prev =>
+      prev.map(s =>
+        s.id === serviceId
+          ? {
+              ...s,
+              status: result.status,
+              latencyMs: result.latencyMs,
+              httpStatus: result.httpStatus,
+              lastCheckedTime: now,
+              message: result.message,
+              errorDetail: result.errorDetail,
+              solutions: result.solutions
+            }
+          : s
+      )
+    );
+
+    setAuditLogs(old => [
+      ...old,
+      `[${now}] [${serviceId.toUpperCase()}] ${result.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${result.message}`
+    ]);
   };
 
   // Uji semua layanan sekaligus secara nyata
