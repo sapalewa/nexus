@@ -33,6 +33,7 @@ export interface ServiceCheckItem {
   httpStatus?: number;
   message: string;
   errorDetail?: string;
+  solutions?: string[];
   secretName: string;
 }
 
@@ -103,7 +104,14 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
 
     try {
       if (serviceId === 'supabase') {
-        const res = await fetch('/api/test/supabase', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const res = await fetch('/api/test/supabase', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({
+            url: config.supabase_url,
+            key: config.supabase_service_role_key || config.supabase_anon_key
+          }) 
+        });
         const data = await res.json();
         
         setServices(prev =>
@@ -123,7 +131,14 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
         );
         setAuditLogs(old => [...old, `[${now}] [SUPABASE] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.error || data.details}`]);
       } else if (serviceId === 'meta_whatsapp') {
-        const res = await fetch('/api/test/meta-whatsapp', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const res = await fetch('/api/test/meta-whatsapp', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({
+            phone_number_id: config.whatsapp_phone_number_id,
+            access_token: config.whatsapp_access_token
+          }) 
+        });
         const data = await res.json();
 
         setServices(prev =>
@@ -165,7 +180,14 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
         );
         setAuditLogs(old => [...old, `[${now}] [WEBHOOK] HTTP ${res.status}: ${isOk ? 'TERKONEKSI' : 'GAGAL'}`]);
       } else if (serviceId === 'elevenlabs') {
-        const res = await fetch('/api/test/elevenlabs', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({}) });
+        const res = await fetch('/api/test/elevenlabs', { 
+          method: 'POST', 
+          headers: { 'Content-Type': 'application/json' }, 
+          body: JSON.stringify({
+            api_key: config.elevenlabs_api_key,
+            agent_id: config.elevenlabs_agent_id
+          }) 
+        });
         const data = await res.json();
 
         setServices(prev =>
@@ -178,12 +200,13 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
                   httpStatus: res.status,
                   lastCheckedTime: now,
                   message: data.details || data.error,
-                  errorDetail: data.error
+                  errorDetail: data.details && data.error ? `${data.error} (${data.details})` : (data.error || data.details),
+                  solutions: data.solution
                 }
               : s
           )
         );
-        setAuditLogs(old => [...old, `[${now}] [ELEVENLABS] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.error || data.details}`]);
+        setAuditLogs(old => [...old, `[${now}] [ELEVENLABS] HTTP ${res.status}: ${data.status === 'connected' ? 'TERKONEKSI' : 'GAGAL'} - ${data.details || data.error}`]);
       }
     } catch (err: any) {
       setServices(prev =>
@@ -421,6 +444,14 @@ export const InfrastructureMonitor: React.FC<InfrastructureMonitorProps> = ({ co
                   {service.errorDetail && (
                     <div className="font-mono text-[10px] mt-1 text-rose-300 bg-rose-950/50 p-2 rounded-lg border border-rose-500/20">
                       Error: {service.errorDetail}
+                    </div>
+                  )}
+                  {service.solutions && service.solutions.length > 0 && (
+                    <div className="mt-2 pt-2 border-t border-rose-500/20 text-[10px] text-slate-300 space-y-1">
+                      <div className="font-bold text-amber-300">Solusi Perbaikan:</div>
+                      {service.solutions.map((sol, sIdx) => (
+                        <div key={sIdx} className="leading-tight text-slate-300">• {sol}</div>
+                      ))}
                     </div>
                   )}
                 </div>

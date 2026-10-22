@@ -268,68 +268,181 @@ app.post('/api/test/meta-whatsapp', async (req: Request, res: Response) => {
   }
 });
 
-// Test ElevenLabs API Connection
+// Test ElevenLabs API Connection (Supports Customer Service Agents, ConvAI, and Voice Keys)
 app.post('/api/test/elevenlabs', async (req: Request, res: Response) => {
   const cfg = readJson(CONFIG_FILE, initialConfig);
-  const apiKey = req.body.api_key || cfg.elevenlabs_api_key;
-  const agentId = req.body.agent_id || cfg.elevenlabs_agent_id;
+  const rawApiKey = req.body.api_key !== undefined ? req.body.api_key : cfg.elevenlabs_api_key;
+  const rawAgentId = req.body.agent_id !== undefined ? req.body.agent_id : cfg.elevenlabs_agent_id;
 
-  if (!apiKey || apiKey.includes('sk_elevenlabs_xxxx') || apiKey.length < 15) {
+  // 1. Sanitasi API Key & Agent ID (hilangkan spasi, quotes, dan prefix Bearer)
+  const apiKey = String(rawApiKey || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '')
+    .replace(/^Bearer\s+/i, '');
+
+  const agentId = String(rawAgentId || '')
+    .trim()
+    .replace(/^['"]+|['"]+$/g, '');
+
+  if (!apiKey || apiKey.length < 8) {
     return res.status(400).json({
       status: 'disconnected',
       latencyMs: 0,
-      error: 'ELEVENLABS_API_KEY belum dikonfigurasi atau masih bernilai dummy placeholder.',
+      error: 'ELEVENLABS_API_KEY kosong atau belum dimasukkan.',
       details: 'Silakan masukkan API Key resmi dari ElevenLabs Dashboard > Profile Settings > API Keys.'
     });
   }
 
   const startTime = Date.now();
+  const headers = {
+    'xi-api-key': apiKey,
+    'Content-Type': 'application/json'
+  };
+
+  let lastErrorDetail = '';
+  let lastHttpStatus = 401;
+
   try {
-    // 1. Cek User Account & Subscription
-    const userRes = await fetch('https://api.elevenlabs.io/v1/user', {
-      headers: { 'xi-api-key': apiKey }
-    });
-
-    const latencyMs = Date.now() - startTime;
-    const userData = await userRes.json();
-
-    if (!userRes.ok) {
-      return res.status(userRes.status).json({
-        status: 'disconnected',
-        latencyMs,
-        error: userData.detail?.message || userData.detail || 'ElevenLabs API Key tidak valid (HTTP 401 Unauthorized).',
-        details: 'API Key yang dimasukkan ditolak oleh server ElevenLabs.'
-      });
-    }
-
-    // 2. Cek Agent jika diisi
-    let agentVerified = false;
-    if (agentId && !agentId.includes('agent_elevenlabs_sales_pro')) {
+    // TAHAP 1: Jika Agent ID diisi (misal Customer Service Agent), uji langsung endpoint ConvAI Agent
+    if (agentId && agentId !== 'agent_elevenlabs_sales_pro') {
       try {
+        console.log(`[ElevenLabs Test] Menguji Customer Service Agent ID: ${agentId}...`);
         const agentRes = await fetch(`https://api.elevenlabs.io/v1/convai/agents/${agentId}`, {
-          headers: { 'xi-api-key': apiKey }
+          method: 'GET',
+          headers
         });
+
+        const latencyMs = Date.now() - startTime;
+        const agentData = await agentRes.json();
+
         if (agentRes.ok) {
-          agentVerified = true;
+          const agentName = agentData.name || 'Customer Service Agent';
+          const voiceId = agentData.conversation_config?.tts?.voice_id || 'Default Voice';
+          const firstMessage = agentData.conversation_config?.agent?.first_message || '';
+          const language = agentData.conversation_config?.agent?.language || 'id';
+
+          return res.json({
+            status: 'connected',
+            latencyMs,
+            agentVerified: true,
+            agentName,
+            agentId,
+            voiceId,
+            language,
+            firstMessage: firstMessage ? firstMessage.slice(0, 80) + '...' : undefined,
+            details: `Koneksi Berhasil! Customer Service Agent "${agentName}" terverifikasi aktif di ElevenLabs (HTTP 200). Latency: ${latencyMs}ms.`
+          });
+        } else {
+          lastHttpStatus = agentRes.status;
+          lastErrorDetail = agentData.detail?.message || agentData.detail || JSON.stringify(agentData);
+          console.warn(`[ElevenLabs Agent Check Error]: HTTP ${agentRes.status}`, lastErrorDetail);
         }
-      } catch {}
+      } catch (agentErr: any) {
+        console.warn('[ElevenLabs Agent Fetch Exception]:', agentErr.message);
+      }
     }
 
-    return res.json({
-      status: 'connected',
+    // TAHAP 2: Uji list Conversational Agents (/v1/convai/agents)
+    try {
+      const convAiRes = await fetch('https://api.elevenlabs.io/v1/convai/agents', {
+        method: 'GET',
+        headers
+      });
+
+      if (convAiRes.ok) {
+        const latencyMs = Date.now() - startTime;
+        const convData = await convAiRes.json();
+        const agentsList = convData.agents || [];
+        const foundAgent = agentsList.find((a: any) =>
+          (agentId && a.agent_id === agentId) ||
+          (a.name && a.name.toLowerCase().includes('customer'))
+        );
+
+        return res.json({
+          status: 'connected',
+          latencyMs,
+          agentVerified: !!foundAgent,
+          agentName: foundAgent ? foundAgent.name : (agentsList[0]?.name || 'Conversational AI'),
+          totalAgents: agentsList.length,
+          agents: agentsList.map((a: any) => ({ id: a.agent_id, name: a.name })),
+          details: `API Key Valid! Terhubung ke ElevenLabs Conversational AI Engine. Ditemukan ${agentsList.length} agent (HTTP 200).`
+        });
+      } else {
+        const convErr = await convAiRes.json().catch(() => ({}));
+        lastHttpStatus = convAiRes.status;
+        lastErrorDetail = convErr.detail?.message || convErr.detail || lastErrorDetail;
+      }
+    } catch (e: any) {
+      console.warn('[ElevenLabs ConvAI List Exception]:', e.message);
+    }
+
+    // TAHAP 3: Uji User Profile (/v1/user)
+    try {
+      const userRes = await fetch('https://api.elevenlabs.io/v1/user', {
+        method: 'GET',
+        headers
+      });
+
+      if (userRes.ok) {
+        const latencyMs = Date.now() - startTime;
+        const userData = await userRes.json();
+        return res.json({
+          status: 'connected',
+          latencyMs,
+          tier: userData.subscription?.tier || 'Active',
+          character_count: `${userData.subscription?.character_count || 0} / ${userData.subscription?.character_limit || 'Unlimited'}`,
+          details: `API Key Terverifikasi (HTTP 200). Akun ElevenLabs Tier: ${userData.subscription?.tier || 'Active'}. Latency: ${latencyMs}ms.`
+        });
+      } else {
+        const userErr = await userRes.json().catch(() => ({}));
+        lastHttpStatus = userRes.status;
+        lastErrorDetail = userErr.detail?.message || userErr.detail || lastErrorDetail;
+      }
+    } catch (e: any) {
+      console.warn('[ElevenLabs User Check Exception]:', e.message);
+    }
+
+    // TAHAP 4: Uji Voice Library (/v1/voices)
+    try {
+      const voicesRes = await fetch('https://api.elevenlabs.io/v1/voices', {
+        method: 'GET',
+        headers
+      });
+
+      if (voicesRes.ok) {
+        const latencyMs = Date.now() - startTime;
+        const voicesData = await voicesRes.json();
+        return res.json({
+          status: 'connected',
+          latencyMs,
+          totalVoices: voicesData.voices?.length || 0,
+          details: `API Key Terverifikasi via ElevenLabs Voice Library (HTTP 200). ${voicesData.voices?.length || 0} suara tersedia. Latency: ${latencyMs}ms.`
+        });
+      }
+    } catch {}
+
+    // JIKA SELURUH ENDPOINT GAGAL, berikan panduan perbaikan yang sangat jelas
+    const latencyMs = Date.now() - startTime;
+    return res.status(lastHttpStatus).json({
+      status: 'disconnected',
       latencyMs,
-      tier: userData.subscription?.tier || 'Free / Creator',
-      character_count: `${userData.subscription?.character_count || 0} / ${userData.subscription?.character_limit || 10000}`,
-      agentVerified,
-      details: `ElevenLabs API Terverifikasi (HTTP 200). Latency: ${latencyMs}ms. Tier: ${userData.subscription?.tier || 'Active'}`
+      httpStatus: lastHttpStatus,
+      error: `API Key ElevenLabs ditolak oleh server ElevenLabs (HTTP ${lastHttpStatus}).`,
+      details: lastErrorDetail || 'Invalid API Key or Agent ID',
+      solution: [
+        '1. Pastikan API Key di-copy dari: ElevenLabs Dashboard > Klik avatar profil pojok kiri/kanan bawah > Profile Settings > API Keys.',
+        '2. Jika menggunakan Fine-Grained API Key (Scoped Key), pastikan Anda mencentang permission "Conversational AI" dan "Text-to-Speech".',
+        '3. Pastikan tidak ada spasi di awal/akhir API Key (key biasanya dimulai dengan sk_...).',
+        '4. Untuk Agent Customer Service: Buka menu Conversational AI > Klik Agent Anda > Salin Agent ID dari URL browser (misal: https://elevenlabs.io/app/conversational-ai/agents/<AGENT_ID>).'
+      ]
     });
   } catch (err: any) {
     const latencyMs = Date.now() - startTime;
     return res.status(502).json({
       status: 'disconnected',
       latencyMs,
-      error: err.message || 'Gagal menghubungi ElevenLabs API.',
-      details: 'Gagal terhubung ke https://api.elevenlabs.io'
+      error: err.message || 'Gagal menghubungi server ElevenLabs.',
+      details: 'Gagal melakukan fetch jaringan ke https://api.elevenlabs.io. Periksa koneksi internet.'
     });
   }
 });
